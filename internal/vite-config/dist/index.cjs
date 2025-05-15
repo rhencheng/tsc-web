@@ -1,1 +1,1 @@
-module.exports = require("/Users/rencheng/Desktop/tsc-frontend/node_modules/.pnpm/jiti@1.20.0/node_modules/jiti/lib/index.js")(null, { interopDefault: true, esmResolve: true })("/Users/rencheng/Desktop/tsc-frontend/internal/vite-config/src/index.ts")
+module.exports = require("/Users/rencheng/Downloads/workspaces-master/tsc-web/node_modules/.pnpm/jiti@1.20.0/node_modules/jiti/lib/index.js")(null, { interopDefault: true, esmResolve: true })("/Users/rencheng/Downloads/workspaces-master/tsc-web/internal/vite-config/src/index.ts")

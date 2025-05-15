@@ -1,2 +1,2 @@
-export * from "/Users/rencheng/Desktop/tsc-frontend/internal/eslint-config/src/index";
-export { default } from "/Users/rencheng/Desktop/tsc-frontend/internal/eslint-config/src/index";
+export * from "/Users/rencheng/Downloads/workspaces-master/tsc-web/internal/eslint-config/src/index";
+export { default } from "/Users/rencheng/Downloads/workspaces-master/tsc-web/internal/eslint-config/src/index";

@@ -1,1 +1,1 @@
-export * from "/Users/rencheng/Desktop/tsc-frontend/internal/vite-config/src/index";
+export * from "/Users/rencheng/Downloads/workspaces-master/tsc-web/internal/vite-config/src/index";

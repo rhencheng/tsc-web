@@ -1,5 +1,7 @@
 
-> @vben/stylelint-config@1.0.0 stub /Users/rencheng/Desktop/tsc-frontend/internal/stylelint-config
+> @vben/stylelint-config@1.0.0 stub /Users/rencheng/Downloads/workspaces-master/tsc-web/internal/stylelint-config
 > pnpm unbuild --stub
 
 ℹ Stubbing @vben/stylelint-config
+(node:42522) [DEP0180] DeprecationWarning: fs.Stats constructor is deprecated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
