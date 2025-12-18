@@ -1,1 +1,0 @@
-const s=(()=>{const e=[];for(let t=0;t<12;t++)e.push({name:"Vben Admin",img:"/src/assets/images/header.jpg",desc:"A complete enterprise level backend management system based on Vue Next, TypeScript, Ant Design Vue implementation"});return e})();export{s as cardList};

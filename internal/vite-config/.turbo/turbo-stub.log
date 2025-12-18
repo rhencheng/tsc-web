@@ -1,7 +1,0 @@
-
-> @vben/vite-config@1.0.0 stub /Users/rencheng/Downloads/workspaces-master/tsc-web/internal/vite-config
-> pnpm unbuild --stub
-
-ℹ Stubbing @vben/vite-config
-(node:42526) [DEP0180] DeprecationWarning: fs.Stats constructor is deprecated.
-(Use `node --trace-deprecation ...` to show where the warning was created)

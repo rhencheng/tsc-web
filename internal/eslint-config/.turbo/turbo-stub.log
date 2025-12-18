@@ -1,7 +1,0 @@
-
-> @vben/eslint-config@1.0.0 stub /Users/rencheng/Downloads/workspaces-master/tsc-web/internal/eslint-config
-> pnpm unbuild --stub
-
-ℹ Stubbing @vben/eslint-config
-(node:42524) [DEP0180] DeprecationWarning: fs.Stats constructor is deprecated.
-(Use `node --trace-deprecation ...` to show where the warning was created)

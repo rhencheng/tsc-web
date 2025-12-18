@@ -1,2 +1,0 @@
-export * from "/Users/rencheng/Downloads/workspaces-master/tsc-web/internal/stylelint-config/src/index";
-export { default } from "/Users/rencheng/Downloads/workspaces-master/tsc-web/internal/stylelint-config/src/index";
