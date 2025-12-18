@@ -1,0 +1,2127 @@
+/**
+ * 自动化任务管理 Web UI - 前端应用
+ */
+
+// ==================== 全局状态 ====================
+let tasks = [];
+let outputs = [];
+let currentTask = null;
+let statusPollingInterval = null;
+let selectedCompany = "中移系统集成有限公司"; // 默认公司名称
+
+// ==================== 初始化 ====================
+document.addEventListener('DOMContentLoaded', () => {
+    initNavigation();
+    loadCompanySelector();
+    loadTasks();
+});
+
+async function loadCompanySelector() {
+    try {
+        const response = await fetch('/api/company-names');
+        const data = await response.json();
+        
+        if (data.success) {
+            const select = document.getElementById('company-select');
+            if (select) {
+                select.innerHTML = data.companies.map(name => 
+                    `<option value="${name}" ${name === '中移系统集成有限公司' ? 'selected' : ''}>${name}</option>`
+                ).join('');
+            }
+        }
+    } catch (error) {
+        console.error('加载公司列表失败', error);
+    }
+}
+
+// ==================== 导航 ====================
+function initNavigation() {
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            const view = item.dataset.view;
+            switchView(view);
+        });
+    });
+}
+
+function switchView(viewName) {
+    // 更新导航状态
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.classList.toggle('active', item.dataset.view === viewName);
+    });
+    
+    // 切换视图
+    document.querySelectorAll('.view').forEach(view => {
+        view.classList.toggle('active', view.id === `${viewName}-view`);
+    });
+    
+    // 加载对应数据
+    if (viewName === 'tasks') {
+        loadTasks();
+    } else if (viewName === 'batches') {
+        loadBatches();
+    } else if (viewName === 'companies') {
+        loadCompanies();
+    } else if (viewName === 'compare') {
+        loadCompareView();
+    } else if (viewName === 'config') {
+        loadConfig();
+    }
+    
+    // 关闭详情悬浮框
+    closeTaskDetail();
+}
+
+// ==================== 任务管理 ====================
+async function loadTasks() {
+    const container = document.getElementById('tasks-container');
+    container.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    
+    try {
+        const response = await fetch('/api/tasks');
+        const data = await response.json();
+        
+        if (data.success) {
+            tasks = data.tasks;
+            renderTasks();
+        } else {
+            showToast('加载任务失败: ' + data.error, 'error');
+        }
+    } catch (error) {
+        showToast('网络错误: ' + error.message, 'error');
+    }
+}
+
+function renderTasks() {
+    const container = document.getElementById('tasks-container');
+    
+    if (tasks.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">📋</div>
+                <div class="empty-title">暂无任务</div>
+                <div class="empty-text">点击"新建任务"创建第一个自动化任务</div>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = `
+        <div class="tasks-table-container">
+            <table class="tasks-table">
+                <thead>
+                    <tr>
+                        <th>任务名称</th>
+                        <th>描述</th>
+                        <th>目标网址</th>
+                        <th>动作数</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${tasks.map(task => `
+                        <tr onclick="showTaskDetail('${task._file}', event)">
+                            <td class="task-name-cell">${task.name || task._file}</td>
+                            <td class="task-description-cell" title="${task.description || '暂无描述'}">${task.description || '暂无描述'}</td>
+                            <td class="task-url-cell" title="${task.url || 'N/A'}">${truncateUrl(task.url)}</td>
+                            <td class="task-actions-cell">${task.actions?.length || 0}</td>
+                            <td>
+                                <span class="task-status idle" id="status-${task._file}">就绪</span>
+                            </td>
+                            <td>
+                                <div class="task-actions-buttons" onclick="event.stopPropagation()">
+                                    <button class="btn btn-success btn-sm" onclick="runTask('${task._file}')" title="运行任务">
+                                        ▶
+                                    </button>
+                                    <button class="btn btn-secondary btn-sm" onclick="editTask('${task._file}')" title="编辑任务">
+                                        ✏️
+                                    </button>
+                                    <button class="btn btn-danger btn-sm" onclick="deleteTask('${task._file}')" title="删除任务">
+                                        🗑️
+                                    </button>
+                                </div>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+
+function truncateUrl(url) {
+    if (!url) return 'N/A';
+    try {
+        const urlObj = new URL(url);
+        return urlObj.hostname;
+    } catch {
+        return url.substring(0, 30) + '...';
+    }
+}
+
+// ==================== 任务详情 ====================
+let detailPopover = null;
+let detailPopoverTimeout = null;
+
+async function showTaskDetail(filename, event) {
+    // 如果点击的是按钮，不显示详情
+    if (event && (event.target.tagName === 'BUTTON' || event.target.closest('button'))) {
+        return;
+    }
+    
+    // 清除之前的定时器
+    if (detailPopoverTimeout) {
+        clearTimeout(detailPopoverTimeout);
+    }
+    
+    // 创建或获取悬浮框
+    if (!detailPopover) {
+        detailPopover = document.createElement('div');
+        detailPopover.className = 'detail-popover';
+        detailPopover.innerHTML = `
+            <div class="popover-header">
+                <h2 id="popover-title">任务详情</h2>
+                <button class="btn-close" onclick="closeTaskDetail()">×</button>
+            </div>
+            <div class="popover-content" id="popover-content"></div>
+        `;
+        document.body.appendChild(detailPopover);
+        
+        // 点击外部关闭
+        document.addEventListener('click', (e) => {
+            if (detailPopover && !detailPopover.contains(e.target) && !e.target.closest('tr[onclick*="showTaskDetail"]')) {
+                closeTaskDetail();
+            }
+        });
+    }
+    
+    const content = document.getElementById('popover-content');
+    const title = document.getElementById('popover-title');
+    
+    // 获取点击位置
+    const rect = event ? event.currentTarget.getBoundingClientRect() : { top: 100, left: 100, bottom: 150, right: 200 };
+    
+    // 计算位置，确保不超出屏幕
+    const popoverWidth = 500;
+    const popoverHeight = 600;
+    const margin = 10;
+    
+    let top = rect.bottom + margin;
+    let left = rect.left;
+    
+    // 如果下方空间不足，显示在上方
+    if (top + popoverHeight > window.innerHeight) {
+        top = rect.top - popoverHeight - margin;
+        if (top < 0) top = margin; // 如果上方也不够，贴顶部
+    }
+    
+    // 如果右侧空间不足，调整到左侧
+    if (left + popoverWidth > window.innerWidth) {
+        left = window.innerWidth - popoverWidth - margin;
+    }
+    if (left < margin) left = margin;
+    
+    // 设置位置
+    detailPopover.style.top = top + 'px';
+    detailPopover.style.left = left + 'px';
+    detailPopover.style.transform = 'none';
+    
+    content.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    detailPopover.classList.add('show');
+    
+    try {
+        const response = await fetch(`/api/tasks/${filename}`);
+        const data = await response.json();
+        
+        if (data.success) {
+            currentTask = data.task;
+            title.textContent = currentTask.name || filename;
+            
+            content.innerHTML = `
+                <div class="form-group">
+                    <label class="form-label">任务名称</label>
+                    <div class="form-input" style="background: var(--bg-secondary); padding: 8px 12px;">${currentTask.name || 'N/A'}</div>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label">描述</label>
+                    <div class="form-input" style="background: var(--bg-secondary); padding: 8px 12px;">${currentTask.description || '暂无描述'}</div>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label">目标网址</label>
+                    <div class="form-input" style="background: var(--bg-secondary); padding: 8px 12px; word-break: break-all;">
+                        <a href="${currentTask.url}" target="_blank" style="color: var(--accent-blue)">${currentTask.url || 'N/A'}</a>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label">动作列表 (${currentTask.actions?.length || 0})</label>
+                    <div class="actions-list">
+                        ${(currentTask.actions || []).map((action, idx) => `
+                            <div class="action-item">
+                                <span style="color: var(--text-muted)">${idx + 1}</span>
+                                <span class="action-type">${action.type}</span>
+                                <span class="action-detail">${getActionDetail(action)}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label">输出文件</label>
+                    <div class="form-input" style="background: var(--bg-secondary); padding: 8px 12px;">${currentTask.output_file || 'N/A'}</div>
+                </div>
+                
+                <div class="form-group" id="log-section" style="display: none;">
+                    <label class="form-label">执行日志</label>
+                    <div class="log-container" id="task-logs"></div>
+                </div>
+                
+                <div class="form-group">
+                    <label class="form-label">执行公司</label>
+                    <select class="form-select" id="popover-company-select" style="width: 100%;">
+                        <option value="中移系统集成有限公司" ${selectedCompany === '中移系统集成有限公司' ? 'selected' : ''}>中移系统集成有限公司</option>
+                        <option value="联通数字科技有限公司" ${selectedCompany === '联通数字科技有限公司' ? 'selected' : ''}>联通数字科技有限公司</option>
+                        <option value="中电信数智科技有限公司" ${selectedCompany === '中电信数智科技有限公司' ? 'selected' : ''}>中电信数智科技有限公司</option>
+                    </select>
+                </div>
+                
+                <div style="display: flex; gap: 12px; margin-top: 20px;">
+                    <button class="btn btn-success" onclick="runTaskFromPopover('${filename}')">
+                        ▶ 运行任务
+                    </button>
+                    <button class="btn btn-secondary" onclick="editTask('${filename}')">
+                        ✏️ 编辑配置
+                    </button>
+                </div>
+            `;
+            
+            // 检查任务状态
+            checkTaskStatus(filename);
+        }
+    } catch (error) {
+        content.innerHTML = '<div class="empty-state"><div class="empty-title">加载失败</div></div>';
+        showToast('加载任务详情失败', 'error');
+    }
+}
+
+function closeTaskDetail() {
+    if (detailPopover) {
+        detailPopover.classList.remove('show');
+    }
+    if (detailPopoverTimeout) {
+        clearTimeout(detailPopoverTimeout);
+    }
+}
+
+function toggleCertificateCard(detailsId) {
+    const detailsElement = document.getElementById(detailsId);
+    const iconElement = document.getElementById(`icon-${detailsId}`);
+    
+    if (!detailsElement || !iconElement) return;
+    
+    if (detailsElement.style.display === 'none') {
+        detailsElement.style.display = 'block';
+        iconElement.textContent = '▼';
+        iconElement.style.transform = 'rotate(0deg)';
+    } else {
+        detailsElement.style.display = 'none';
+        iconElement.textContent = '▶';
+        iconElement.style.transform = 'rotate(-90deg)';
+    }
+}
+
+function runTaskFromPopover(filename) {
+    const companySelect = document.getElementById('popover-company-select');
+    if (companySelect) {
+        selectedCompany = companySelect.value;
+        // 同步更新主界面的选择器
+        const mainSelect = document.getElementById('company-select');
+        if (mainSelect) {
+            mainSelect.value = selectedCompany;
+        }
+    }
+    runTask(filename);
+    closeTaskDetail();
+}
+
+function getActionDetail(action) {
+    switch (action.type) {
+        case 'input':
+            return `${action.target} → "${action.value}"`;
+        case 'click':
+            return action.target;
+        case 'wait':
+            return `${action.seconds}秒`;
+        case 'screenshot':
+            return action.filename;
+        case 'screenshot_ocr':
+            return `截图OCR: ${action.filename || 'screenshot_ocr.png'}`;
+        case 'extract':
+            return action.target;
+        case 'extract_text':
+        case 'extract_all_text':
+            return '提取页面所有文字';
+        case 'checkbox':
+            return `${action.target} = ${action.checked}`;
+        case 'select':
+            return `${action.target} → ${action.value}`;
+        case 'submit':
+            return action.target || '提交表单';
+        case 'click_and_navigate':
+            return action.target;
+        case 'switch_to_new_window':
+            return '切换到新窗口';
+        case 'switch_to_latest_tab':
+            return '切换到最新标签页';
+        case 'loop_click_extract':
+            return `循环提取: ${action.list_selector || ''}`;
+        case 'find_links_extract':
+            return `查找链接: ${action.match_text || ''}`;
+        default:
+            return JSON.stringify(action);
+    }
+}
+
+function closeDetailPanel() {
+    closeTaskDetail();
+    currentTask = null;
+    if (statusPollingInterval) {
+        clearInterval(statusPollingInterval);
+        statusPollingInterval = null;
+    }
+}
+
+// ==================== 批量管理 ====================
+let batches = [];
+let batchPollingIntervals = {};
+
+async function loadBatches() {
+    const container = document.getElementById('batches-container');
+    if (!container) return;
+    container.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+    try {
+        const resp = await fetch('/api/batches');
+        const data = await resp.json();
+        if (data.success) {
+            batches = data.batches || [];
+            renderBatches();
+        } else {
+            container.innerHTML = '<div class="empty-state"><div class="empty-title">加载失败</div></div>';
+            showToast('加载批次失败: ' + data.error, 'error');
+        }
+    } catch (e) {
+        container.innerHTML = '<div class="empty-state"><div class="empty-title">网络错误</div></div>';
+        showToast('网络错误: ' + e.message, 'error');
+    }
+}
+
+function renderBatches() {
+    const container = document.getElementById('batches-container');
+    if (!container) return;
+
+    if (!batches || batches.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">🔁</div>
+                <div class="empty-title">暂无批次</div>
+                <div class="empty-text">点击"新建批次"创建批量运行</div>
+            </div>
+        `;
+        return;
+    }
+
+    container.innerHTML = `
+        <div class="batches-table-container">
+            <table class="tasks-table">
+                <thead>
+                    <tr>
+                        <th>批次名称</th>
+                        <th>任务数</th>
+                        <th>进度</th>
+                        <th>状态</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${batches.map(b => `
+                        <tr>
+                            <td>${b.name}</td>
+                            <td>${b.progress?.total || (b.items && b.items.length) || 0}</td>
+                            <td>${(b.progress?.completed||0)}/${(b.progress?.total||0)} 已完成，失败 ${(b.progress?.failed||0)}</td>
+                            <td>${b.status || 'pending'}</td>
+                            <td>
+                                <div class="task-actions-buttons">
+                                    <button class="btn btn-success btn-sm" onclick="startBatch('${b.id}')">▶ 启动</button>
+                                    <button class="btn btn-secondary btn-sm" onclick="showBatchDetail('${b.id}')">详情</button>
+                                    <button class="btn btn-warning btn-sm" onclick="showScheduleModal('${b.id}')">⏰ 定时</button>
+                                    <button class="btn btn-danger btn-sm" onclick="deleteBatch('${b.id}')">🗑️ 删除</button>
+                                </div>
+                            </td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+
+function showCreateBatchModal() {
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    modal.classList.add('open');
+    content.innerHTML = `
+        <div class="modal-header"><h2>新建批次</h2><button class="btn-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>批次名称</label>
+                <input id="batch-name" class="form-input" />
+            </div>
+            <div class="form-group">
+                <label>执行公司</label>
+                <select id="batch-company" class="form-select">
+                    <option value="中移系统集成有限公司">中移系统集成有限公司</option>
+                    <option value="联通数字科技有限公司">联通数字科技有限公司</option>
+                    <option value="中电信数智科技有限公司">中电信数智科技有限公司</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>选择任务（可多选）</label>
+                <div id="batch-tasks-list" style="max-height:260px; overflow:auto; border:1px solid var(--border); padding:8px; background:var(--bg-secondary)"></div>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-primary" onclick="createBatch()">创建并启动</button>
+            <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+        </div>
+    `;
+
+    // fill tasks
+    const list = document.getElementById('batch-tasks-list');
+    if (tasks && tasks.length) {
+        list.innerHTML = tasks.map(t => `
+            <label style="display:block; margin-bottom:6px;">
+                <input type="checkbox" value="${t._file}" /> ${t.name || t._file}
+            </label>
+        `).join('');
+    } else {
+        list.innerHTML = '<div class="empty-text">暂无任务，请先创建任务</div>';
+    }
+}
+
+async function createBatch() {
+    const name = document.getElementById('batch-name').value || '';
+    const company = document.getElementById('batch-company').value;
+    const checkboxes = Array.from(document.querySelectorAll('#batch-tasks-list input[type="checkbox"]'));
+    const selected = checkboxes.filter(c => c.checked).map(c => c.value);
+    if (selected.length === 0) {
+        showToast('请选择至少一个任务', 'error');
+        return;
+    }
+
+    try {
+        const resp = await fetch('/api/batches', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, tasks: selected, company_name: company})
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast('批次创建成功', 'success');
+            closeModal();
+            loadBatches();
+            // auto start
+            const id = data.batch.id;
+            startBatch(id);
+        } else {
+            showToast('创建失败: ' + data.error, 'error');
+        }
+    } catch (e) {
+        showToast('网络错误: ' + e.message, 'error');
+    }
+}
+
+async function startBatch(batchId) {
+    try {
+        const resp = await fetch(`/api/batches/${batchId}/start`, {method: 'POST'});
+        const data = await resp.json();
+        if (data.success) {
+            showToast('批次已开始执行', 'success');
+            // start polling for this batch
+            if (batchPollingIntervals[batchId]) clearInterval(batchPollingIntervals[batchId]);
+            pollBatch(batchId);
+            batchPollingIntervals[batchId] = setInterval(() => pollBatch(batchId), 3000);
+            loadBatches();
+        } else {
+            showToast('启动失败: ' + data.error, 'error');
+        }
+    } catch (e) {
+        showToast('网络错误: ' + e.message, 'error');
+    }
+}
+
+async function pollBatch(batchId) {
+    try {
+        const resp = await fetch(`/api/batches/${batchId}`);
+        const data = await resp.json();
+        if (data.success) {
+            // update local batches
+            const idx = batches.findIndex(b => b.id === batchId);
+            if (idx >= 0) batches[idx] = data.batch;
+            renderBatches();
+            // update flow if detail open
+            const detailEl = document.getElementById('batch-detail-' + batchId);
+            if (detailEl && detailEl.dataset.open === '1') {
+                // renderBatchFlow(batchId);  // flowchart removed
+            }
+            if (data.batch.status !== 'running' && batchPollingIntervals[batchId]) {
+                clearInterval(batchPollingIntervals[batchId]);
+                delete batchPollingIntervals[batchId];
+            }
+        }
+    } catch (e) {
+        // ignore
+    }
+}
+
+async function showBatchDetail(batchId) {
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    modal.classList.add('open');
+    content.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+
+    try {
+        const resp = await fetch(`/api/batches/${batchId}`);
+        const data = await resp.json();
+        if (!data.success) {
+            content.innerHTML = '<div class="empty-title">加载失败</div>';
+            return;
+        }
+
+        const b = data.batch;
+        content.innerHTML = `
+            <div class="modal-header"><h2>批次详情 - ${b.name}</h2><button class="btn-close" onclick="closeModal()">×</button></div>
+            <div class="modal-body">
+                <div class="form-group"><label>状态</label><div class="form-input">${b.status}</div></div>
+                <div class="form-group"><label>进度</label><div class="form-input">${(b.progress.completed||0)}/${(b.progress.total||0)} 已完成，失败 ${(b.progress.failed||0)}</div></div>
+                <div class="form-group"><label>任务列表</label>
+                    <div style="max-height:180px; overflow:auto; padding:8px; background:var(--bg-secondary)">
+                        ${(b.items||[]).map(it => `<div style="margin-bottom:6px;"><strong>[${it.index}]</strong> ${it.task._file || it.task.name || JSON.stringify(it.task)} — ${it.status}</div>`).join('')}
+                    </div>
+                </div>
+                <div class="form-group"><label>流程图</label><div id="batch-flow-${b.id}" style="background:var(--bg-secondary); padding:12px; min-height:120px"></div></div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="startBatch('${b.id}')">▶ 重启</button>
+                <button class="btn btn-secondary" onclick="closeModal()">关闭</button>
+            </div>
+        `;
+
+        // mark open
+        const detailEl = document.getElementById('modal-content');
+        detailEl.dataset.open = '1';
+
+        // renderBatchFlow(b.id);  // flowchart removed
+        // poll while open
+        if (batchPollingIntervals[b.id]) clearInterval(batchPollingIntervals[b.id]);
+        pollBatch(b.id);
+        batchPollingIntervals[b.id] = setInterval(() => pollBatch(b.id), 3000);
+
+    } catch (e) {
+        content.innerHTML = '<div class="empty-title">网络错误</div>';
+    }
+}
+
+// flowchart rendering removed
+
+async function showScheduleModal(batchId) {
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    modal.classList.add('open');
+    content.innerHTML = `
+        <div class="modal-header"><h2>定时任务</h2><button class="btn-close" onclick="closeModal()">×</button></div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>间隔（秒）</label>
+                <input id="schedule-interval" class="form-input" placeholder="例如 3600" />
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn btn-primary" onclick="scheduleBatch('${batchId}')">保存并启用</button>
+            <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+        </div>
+    `;
+}
+
+async function scheduleBatch(batchId) {
+    const interval = parseInt(document.getElementById('schedule-interval').value || '0');
+    if (!interval || interval <= 0) {
+        showToast('请输入有效的间隔秒数', 'error');
+        return;
+    }
+
+    try {
+        const resp = await fetch(`/api/batches/${batchId}/schedule`, {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({interval_seconds: interval})
+        });
+        const data = await resp.json();
+        if (data.success) {
+            showToast('定时已启用', 'success');
+            closeModal();
+            loadBatches();
+        } else {
+            showToast('定时失败: ' + data.error, 'error');
+        }
+    } catch (e) {
+        showToast('网络错误: ' + e.message, 'error');
+    }
+}
+
+async function deleteBatch(batchId) {
+    if (!confirm('确认删除该批次吗？')) return;
+    try {
+        const resp = await fetch(`/api/batches/${batchId}`, {method: 'DELETE'});
+        const data = await resp.json();
+        if (data.success) {
+            showToast('已删除', 'success');
+            loadBatches();
+        } else {
+            showToast('删除失败: ' + data.error, 'error');
+        }
+    } catch (e) {
+        showToast('网络错误: ' + e.message, 'error');
+    }
+}
+
+// ==================== 公司选择 ====================
+function updateCompanyName(companyName) {
+    selectedCompany = companyName;
+    showToast(`已选择公司: ${companyName}`, 'info');
+}
+
+// ==================== 任务执行 ====================
+async function runTask(filename) {
+    try {
+        // 获取当前选择的公司名称
+        const companySelect = document.getElementById('company-select');
+        const companyName = companySelect ? companySelect.value : selectedCompany;
+        
+        const response = await fetch(`/api/tasks/${filename}/run`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ company_name: companyName })
+        });
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast(`任务已开始执行 (${companyName})`, 'success');
+            
+            // 更新状态
+            const statusEl = document.getElementById(`status-${filename}`);
+            if (statusEl) {
+                statusEl.textContent = '运行中';
+                statusEl.className = 'task-status running';
+            }
+            
+            // 显示日志区域
+            const logSection = document.getElementById('log-section');
+            if (logSection) {
+                logSection.style.display = 'block';
+            }
+            
+            // 开始轮询状态
+            startStatusPolling(filename);
+        } else {
+            showToast(data.error || '启动失败', 'error');
+        }
+    } catch (error) {
+        showToast('网络错误: ' + error.message, 'error');
+    }
+}
+
+function startStatusPolling(filename) {
+    if (statusPollingInterval) {
+        clearInterval(statusPollingInterval);
+    }
+    
+    statusPollingInterval = setInterval(async () => {
+        await checkTaskStatus(filename);
+    }, 1000);
+}
+
+async function checkTaskStatus(filename) {
+    try {
+        const response = await fetch(`/api/tasks/${filename}/status`);
+        const data = await response.json();
+        
+        if (data.success) {
+            // 更新日志
+            const logsEl = document.getElementById('task-logs');
+            if (logsEl && data.logs) {
+                logsEl.innerHTML = data.logs.map(log => `
+                    <div class="log-entry">${log}</div>
+                `).join('');
+                logsEl.scrollTop = logsEl.scrollHeight;
+            }
+            
+            // 更新状态
+            const statusEl = document.getElementById(`status-${filename}`);
+            if (statusEl) {
+                if (data.running) {
+                    statusEl.textContent = '运行中';
+                    statusEl.className = 'task-status running';
+                } else if (data.error) {
+                    statusEl.textContent = '失败';
+                    statusEl.className = 'task-status failed';
+                } else if (data.result) {
+                    statusEl.textContent = '完成';
+                    statusEl.className = 'task-status success';
+                }
+            }
+            
+            // 任务完成，停止轮询
+            if (!data.running && statusPollingInterval) {
+                clearInterval(statusPollingInterval);
+                statusPollingInterval = null;
+                
+                if (data.result) {
+                    showToast('任务执行完成', 'success');
+                } else if (data.error) {
+                    showToast('任务执行失败: ' + data.error, 'error');
+                }
+            }
+        }
+    } catch (error) {
+        console.error('检查状态失败:', error);
+    }
+}
+
+// ==================== 任务编辑 ====================
+async function editTask(filename) {
+    try {
+        const response = await fetch(`/api/tasks/${filename}`);
+        const data = await response.json();
+        
+        if (data.success) {
+            showEditModal(data.task, filename);
+        }
+    } catch (error) {
+        showToast('加载任务失败', 'error');
+    }
+}
+
+function showEditModal(task, filename) {
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    
+    content.innerHTML = `
+        <div class="modal-header">
+            <h3 class="modal-title">编辑任务: ${filename}</h3>
+            <button class="btn-close" onclick="closeModal()">×</button>
+        </div>
+        
+        <div class="task-editor">
+            <div class="form-group">
+                <label class="form-label">任务名称</label>
+                <input class="form-input" id="edit-task-name" value="${escapeHtml(task.name || '')}" placeholder="任务名称">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">任务描述</label>
+                <textarea class="form-textarea" id="edit-task-description" rows="2" placeholder="任务描述">${escapeHtml(task.description || '')}</textarea>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">目标网址</label>
+                <input class="form-input" id="edit-task-url" value="${escapeHtml(task.url || '')}" placeholder="https://example.com">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">输出文件路径</label>
+                <input class="form-input" id="edit-task-output" value="${escapeHtml(task.output_file || '')}" placeholder="output/result.csv">
+            </div>
+            
+            <div class="form-group">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <label class="form-label" style="margin: 0;">动作列表</label>
+                    <button class="btn btn-primary btn-sm" onclick="addAction()">
+                        <span>+</span> 添加动作
+                    </button>
+                </div>
+                <div id="actions-container" class="actions-editor">
+                    ${renderActionsEditor(task.actions || [])}
+                </div>
+            </div>
+        </div>
+        
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+            <button class="btn btn-primary" onclick="saveTask('${filename}')">保存</button>
+        </div>
+    `;
+    
+    modal.classList.add('open');
+}
+
+function renderActionsEditor(actions) {
+    if (actions.length === 0) {
+        return '<div class="empty-actions">暂无动作，点击"添加动作"开始配置</div>';
+    }
+    
+    // 重新生成索引，确保从0开始连续
+    return actions.map((action, index) => {
+        // 使用数组索引作为唯一标识
+        return renderActionItem(action, index, actions.length);
+    }).join('');
+}
+
+function renderActionItem(action, index, totalActions) {
+    const actionTypes = {
+        'wait': '等待',
+        'input': '输入',
+        'click': '点击',
+        'hover': '悬停',
+        'checkbox': '复选框',
+        'select': '选择',
+        'submit': '提交表单',
+        'extract': '提取',
+        'extract_text': '提取页面文字',
+        'extract_all_text': '提取页面文字',
+        'find_links_extract': '查找链接并提取',
+        'loop_click_extract': '循环点击提取',
+        'geetest_captcha': '验证码',
+        'screenshot': '截图',
+        'screenshot_ocr': '截图OCR识别',
+        'navigate': '导航',
+        'click_and_navigate': '点击并导航',
+        'switch_to_new_window': '切换到新窗口',
+        'switch_to_latest_tab': '切换到最新标签页'
+    };
+    
+    return `
+        <div class="action-editor-item" data-index="${index}">
+            <div class="action-editor-header">
+                <div class="action-editor-number">${index + 1}</div>
+                <div class="action-editor-type">${actionTypes[action.type] || action.type}</div>
+                <div class="action-editor-actions">
+                    <button class="btn-icon" onclick="moveAction(${index}, 'up')" ${index === 0 ? 'disabled' : ''} title="上移">↑</button>
+                    <button class="btn-icon" onclick="moveAction(${index}, 'down')" ${index === totalActions - 1 ? 'disabled' : ''} title="下移">↓</button>
+                    <button class="btn-icon" onclick="removeAction(${index})" title="删除">×</button>
+                </div>
+            </div>
+            <div class="action-editor-body">
+                ${renderActionForm(action, index)}
+            </div>
+        </div>
+    `;
+}
+
+function renderActionForm(action, index) {
+    const type = action.type || 'wait';
+    
+    let formHtml = `
+        <div class="form-group">
+            <label class="form-label">动作类型</label>
+            <select class="form-select" onchange="changeActionType(${index}, this.value)">
+                <option value="wait" ${type === 'wait' ? 'selected' : ''}>等待</option>
+                <option value="input" ${type === 'input' ? 'selected' : ''}>输入</option>
+                <option value="click" ${type === 'click' ? 'selected' : ''}>点击</option>
+                <option value="hover" ${type === 'hover' ? 'selected' : ''}>悬停</option>
+                <option value="checkbox" ${type === 'checkbox' ? 'selected' : ''}>复选框</option>
+                <option value="select" ${type === 'select' ? 'selected' : ''}>选择</option>
+                <option value="submit" ${type === 'submit' ? 'selected' : ''}>提交表单</option>
+                <option value="extract" ${type === 'extract' ? 'selected' : ''}>提取</option>
+                <option value="extract_text" ${type === 'extract_text' ? 'selected' : ''}>提取页面文字</option>
+                <option value="extract_all_text" ${type === 'extract_all_text' ? 'selected' : ''}>提取页面文字（别名）</option>
+                <option value="find_links_extract" ${type === 'find_links_extract' ? 'selected' : ''}>查找链接并提取</option>
+                <option value="loop_click_extract" ${type === 'loop_click_extract' ? 'selected' : ''}>循环点击提取</option>
+                <option value="geetest_captcha" ${type === 'geetest_captcha' ? 'selected' : ''}>验证码</option>
+                <option value="screenshot" ${type === 'screenshot' ? 'selected' : ''}>截图</option>
+                <option value="screenshot_ocr" ${type === 'screenshot_ocr' ? 'selected' : ''}>截图OCR识别</option>
+                <option value="navigate" ${type === 'navigate' ? 'selected' : ''}>导航</option>
+                <option value="click_and_navigate" ${type === 'click_and_navigate' ? 'selected' : ''}>点击并导航</option>
+                <option value="switch_to_new_window" ${type === 'switch_to_new_window' ? 'selected' : ''}>切换到新窗口</option>
+                <option value="switch_to_latest_tab" ${type === 'switch_to_latest_tab' ? 'selected' : ''}>切换到最新标签页</option>
+            </select>
+        </div>
+    `;
+    
+    // 根据类型渲染不同的表单字段
+    switch (type) {
+        case 'wait':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">等待时间（秒）</label>
+                    <input type="number" class="form-input" id="action-${index}-seconds" value="${action.seconds || 1}" min="0" step="0.1">
+                </div>
+            `;
+            break;
+            
+        case 'input':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">目标选择器</label>
+                    <input class="form-input" id="action-${index}-target" value="${escapeHtml(action.target || '')}" placeholder="input[placeholder*='搜索']">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">输入值</label>
+                    <input class="form-input" id="action-${index}-value" value="${escapeHtml(action.value || '')}" placeholder="要输入的内容">
+                </div>
+            `;
+            break;
+            
+        case 'click':
+        case 'hover':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">目标选择器</label>
+                    <input class="form-input" id="action-${index}-target" value="${escapeHtml(action.target || '')}" placeholder="button.btn 或 text:按钮文字">
+                </div>
+            `;
+            break;
+            
+        case 'checkbox':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">目标选择器</label>
+                    <input class="form-input" id="action-${index}-target" value="${escapeHtml(action.target || '')}" placeholder="input[type='checkbox']">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">
+                        <input type="checkbox" id="action-${index}-checked" ${action.checked ? 'checked' : ''}>
+                        选中状态
+                    </label>
+                </div>
+            `;
+            break;
+            
+        case 'select':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">目标选择器</label>
+                    <input class="form-input" id="action-${index}-target" value="${escapeHtml(action.target || '')}" placeholder="select[name='xxx']">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">选项值</label>
+                    <input class="form-input" id="action-${index}-value" value="${escapeHtml(action.value || '')}" placeholder="要选择的选项值">
+                </div>
+            `;
+            break;
+            
+        case 'submit':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">提交按钮选择器（可选）</label>
+                    <input class="form-input" id="action-${index}-target" value="${escapeHtml(action.target || '')}" placeholder="button[type='submit'] 或留空">
+                    <div class="form-hint">留空则提交当前表单</div>
+                </div>
+            `;
+            break;
+            
+        case 'extract':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">目标选择器</label>
+                    <input class="form-input" id="action-${index}-target" value="${escapeHtml(action.target || '')}" placeholder="div.table 或 表格数据">
+                </div>
+            `;
+            break;
+            
+        case 'extract_text':
+        case 'extract_all_text':
+            formHtml += `
+                <div class="form-group">
+                    <div class="form-info">
+                        <p>此动作将提取当前页面的所有可见文字内容，无需额外参数。</p>
+                    </div>
+                </div>
+            `;
+            break;
+            
+        case 'find_links_extract':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">匹配文字</label>
+                    <input class="form-input" id="action-${index}-match_text" value="${escapeHtml(action.match_text || '')}" placeholder="要匹配的链接文字">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">提取选择器（每行一个）</label>
+                    <textarea class="form-textarea" id="action-${index}-extract_selectors" rows="3" placeholder="div.content&#10;div.table">${(action.extract_selectors || []).join('\n')}</textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">访问后等待时间（秒）</label>
+                    <input type="number" class="form-input" id="action-${index}-wait_after_visit" value="${action.wait_after_visit || 2}" min="0">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">最大链接数（可选）</label>
+                    <input type="number" class="form-input" id="action-${index}-max_links" value="${action.max_links || ''}" placeholder="留空表示不限制">
+                </div>
+            `;
+            break;
+            
+        case 'loop_click_extract':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">列表项选择器</label>
+                    <input class="form-input" id="action-${index}-list_selector" value="${escapeHtml(action.list_selector || '')}" placeholder="ul.list li 或 .item">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">提取选择器（每行一个）</label>
+                    <textarea class="form-textarea" id="action-${index}-extract_selectors" rows="3" placeholder="div.title&#10;div.content">${(action.extract_selectors || []).join('\n')}</textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">点击后等待时间（秒）</label>
+                    <input type="number" class="form-input" id="action-${index}-wait_after_click" value="${action.wait_after_click || 2}" min="0">
+                </div>
+            `;
+            break;
+            
+        case 'geetest_captcha':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">目标类型（可选）</label>
+                    <input class="form-input" id="action-${index}-target_type" value="${escapeHtml(action.target_type || '')}" placeholder="留空表示自动识别">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">最大重试次数</label>
+                    <input type="number" class="form-input" id="action-${index}-max_retries" value="${action.max_retries || 3}" min="1">
+                </div>
+            `;
+            break;
+            
+        case 'screenshot':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">文件名</label>
+                    <input class="form-input" id="action-${index}-filename" value="${escapeHtml(action.filename || '')}" placeholder="output/screenshot.png">
+                </div>
+            `;
+            break;
+            
+        case 'screenshot_ocr':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">截图文件名</label>
+                    <input class="form-input" id="action-${index}-filename" value="${escapeHtml(action.filename || 'output/screenshot_ocr.png')}" placeholder="output/screenshot_ocr.png">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">汇总提示词（可选）</label>
+                    <textarea class="form-textarea" id="action-${index}-summary_prompt" rows="3" placeholder="自定义汇总提示词，留空使用默认提示词">${escapeHtml(action.summary_prompt || '')}</textarea>
+                    <div class="form-hint">留空则使用默认提示词，系统会自动识别并汇总图片中的文字信息</div>
+                </div>
+            `;
+            break;
+            
+        case 'navigate':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">目标网址</label>
+                    <input class="form-input" id="action-${index}-url" value="${escapeHtml(action.url || '')}" placeholder="https://example.com">
+                </div>
+            `;
+            break;
+            
+        case 'click_and_navigate':
+            formHtml += `
+                <div class="form-group">
+                    <label class="form-label">链接选择器</label>
+                    <input class="form-input" id="action-${index}-target" value="${escapeHtml(action.target || '')}" placeholder="a.link 或 text:链接文字">
+                    <div class="form-hint">点击链接并导航到目标URL，不依赖新窗口切换</div>
+                </div>
+            `;
+            break;
+            
+        case 'switch_to_new_window':
+            formHtml += `
+                <div class="form-group">
+                    <div class="form-info">
+                        <p>切换到新打开的窗口。通常在点击链接打开新窗口后使用。</p>
+                    </div>
+                </div>
+            `;
+            break;
+            
+        case 'switch_to_latest_tab':
+            formHtml += `
+                <div class="form-group">
+                    <div class="form-info">
+                        <p>切换到最新打开的标签页。</p>
+                    </div>
+                </div>
+            `;
+            break;
+    }
+    
+    // 所有动作都可以添加注释
+    formHtml += `
+        <div class="form-group">
+            <label class="form-label">注释（可选）</label>
+            <input class="form-input" id="action-${index}-comment" value="${escapeHtml(action.comment || '')}" placeholder="动作说明">
+        </div>
+    `;
+    
+    return formHtml;
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function addAction() {
+    const container = document.getElementById('actions-container');
+    if (!container) {
+        console.error('找不到 actions-container');
+        return;
+    }
+    
+    const actions = getCurrentActions();
+    // 添加新的动作
+    actions.push({ type: 'wait', seconds: 1 });
+    
+    // 重新渲染，使用新的索引
+    container.innerHTML = renderActionsEditor(actions);
+    
+    // 滚动到底部，显示新添加的动作
+    setTimeout(() => {
+        const newItem = container.querySelector('.action-editor-item:last-child');
+        if (newItem) {
+            newItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }, 100);
+}
+
+function removeAction(index) {
+    const container = document.getElementById('actions-container');
+    if (!container) return;
+    
+    const actions = getCurrentActions();
+    actions.splice(index, 1);
+    container.innerHTML = renderActionsEditor(actions);
+}
+
+function moveAction(index, direction) {
+    const container = document.getElementById('actions-container');
+    if (!container) return;
+    
+    const actions = getCurrentActions();
+    
+    if (direction === 'up' && index > 0) {
+        [actions[index], actions[index - 1]] = [actions[index - 1], actions[index]];
+    } else if (direction === 'down' && index < actions.length - 1) {
+        [actions[index], actions[index + 1]] = [actions[index + 1], actions[index]];
+    } else {
+        return; // 无法移动
+    }
+    
+    container.innerHTML = renderActionsEditor(actions);
+}
+
+function changeActionType(index, newType) {
+    const container = document.getElementById('actions-container');
+    if (!container) return;
+    
+    const actions = getCurrentActions();
+    
+    // 创建新类型的默认 action
+    const newAction = { type: newType };
+    switch (newType) {
+        case 'wait':
+            newAction.seconds = 1;
+            break;
+        case 'checkbox':
+            newAction.checked = true;
+            break;
+        case 'find_links_extract':
+            newAction.extract_selectors = [];
+            newAction.wait_after_visit = 2;
+            break;
+        case 'loop_click_extract':
+            newAction.extract_selectors = [];
+            newAction.wait_after_click = 2;
+            break;
+        case 'geetest_captcha':
+            newAction.max_retries = 3;
+            break;
+    }
+    
+    actions[index] = newAction;
+    container.innerHTML = renderActionsEditor(actions);
+}
+
+function getCurrentActions() {
+    const container = document.getElementById('actions-container');
+    if (!container) {
+        console.warn('getCurrentActions: 找不到 actions-container');
+        return [];
+    }
+    
+    const items = container.querySelectorAll('.action-editor-item');
+    const actions = [];
+    
+    // 按索引排序，确保顺序正确
+    const sortedItems = Array.from(items).sort((a, b) => {
+        const indexA = parseInt(a.dataset.index) || 0;
+        const indexB = parseInt(b.dataset.index) || 0;
+        return indexA - indexB;
+    });
+    
+    sortedItems.forEach((item) => {
+        const actionIndex = parseInt(item.dataset.index) || 0;
+        const typeSelect = item.querySelector('select');
+        const type = typeSelect ? typeSelect.value : 'wait';
+        
+        const action = { type };
+        
+        // 根据类型收集字段
+        switch (type) {
+            case 'wait':
+                const secondsEl = document.getElementById(`action-${actionIndex}-seconds`);
+                if (secondsEl) action.seconds = parseFloat(secondsEl.value) || 1;
+                break;
+                
+            case 'input':
+                const inputTarget = document.getElementById(`action-${actionIndex}-target`);
+                const inputValue = document.getElementById(`action-${actionIndex}-value`);
+                if (inputTarget) action.target = inputTarget.value;
+                if (inputValue) action.value = inputValue.value;
+                break;
+                
+            case 'click':
+            case 'hover':
+            case 'extract':
+            case 'click_and_navigate':
+                const targetEl = document.getElementById(`action-${actionIndex}-target`);
+                if (targetEl) action.target = targetEl.value;
+                break;
+                
+            case 'select':
+                const selectTarget = document.getElementById(`action-${actionIndex}-target`);
+                const selectValue = document.getElementById(`action-${actionIndex}-value`);
+                if (selectTarget) action.target = selectTarget.value;
+                if (selectValue) action.value = selectValue.value;
+                break;
+                
+            case 'submit':
+                const submitTarget = document.getElementById(`action-${actionIndex}-target`);
+                if (submitTarget && submitTarget.value) action.target = submitTarget.value;
+                break;
+                
+            case 'extract_text':
+            case 'extract_all_text':
+                // 提取页面文字不需要额外参数
+                break;
+                
+            case 'checkbox':
+                const checkboxTarget = document.getElementById(`action-${actionIndex}-target`);
+                const checkboxChecked = document.getElementById(`action-${actionIndex}-checked`);
+                if (checkboxTarget) action.target = checkboxTarget.value;
+                if (checkboxChecked) action.checked = checkboxChecked.checked;
+                break;
+                
+            case 'find_links_extract':
+                const matchText = document.getElementById(`action-${actionIndex}-match_text`);
+                const extractSelectors = document.getElementById(`action-${actionIndex}-extract_selectors`);
+                const waitAfterVisit = document.getElementById(`action-${actionIndex}-wait_after_visit`);
+                const maxLinks = document.getElementById(`action-${actionIndex}-max_links`);
+                if (matchText) action.match_text = matchText.value;
+                if (extractSelectors) {
+                    action.extract_selectors = extractSelectors.value.split('\n').filter(s => s.trim());
+                }
+                if (waitAfterVisit) action.wait_after_visit = parseInt(waitAfterVisit.value) || 2;
+                if (maxLinks && maxLinks.value) action.max_links = parseInt(maxLinks.value);
+                break;
+                
+                
+            case 'geetest_captcha':
+                const targetType = document.getElementById(`action-${actionIndex}-target_type`);
+                const maxRetries = document.getElementById(`action-${actionIndex}-max_retries`);
+                if (targetType && targetType.value) action.target_type = targetType.value;
+                if (maxRetries) action.max_retries = parseInt(maxRetries.value) || 3;
+                break;
+                
+            case 'screenshot':
+                const filename = document.getElementById(`action-${actionIndex}-filename`);
+                if (filename) action.filename = filename.value;
+                break;
+                
+            case 'screenshot_ocr':
+                const ocrFilename = document.getElementById(`action-${actionIndex}-filename`);
+                const summaryPrompt = document.getElementById(`action-${actionIndex}-summary_prompt`);
+                if (ocrFilename) action.filename = ocrFilename.value;
+                if (summaryPrompt && summaryPrompt.value) action.summary_prompt = summaryPrompt.value;
+                break;
+                
+            case 'navigate':
+                const url = document.getElementById(`action-${actionIndex}-url`);
+                if (url) action.url = url.value;
+                break;
+                
+            case 'loop_click_extract':
+                const listSelector = document.getElementById(`action-${actionIndex}-list_selector`);
+                const loopExtractSelectors = document.getElementById(`action-${actionIndex}-extract_selectors`);
+                const waitAfterClick = document.getElementById(`action-${actionIndex}-wait_after_click`);
+                if (listSelector) action.list_selector = listSelector.value;
+                if (loopExtractSelectors) {
+                    action.extract_selectors = loopExtractSelectors.value.split('\n').filter(s => s.trim());
+                }
+                if (waitAfterClick) action.wait_after_click = parseInt(waitAfterClick.value) || 2;
+                break;
+                
+            case 'switch_to_new_window':
+            case 'switch_to_latest_tab':
+                // 这些动作不需要额外参数
+                break;
+        }
+        
+        // 收集注释
+        const commentEl = document.getElementById(`action-${actionIndex}-comment`);
+        if (commentEl && commentEl.value) action.comment = commentEl.value;
+        
+        actions.push(action);
+    });
+    
+    return actions;
+}
+
+async function saveTask(filename) {
+    const taskData = {
+        name: document.getElementById('edit-task-name').value,
+        description: document.getElementById('edit-task-description').value,
+        url: document.getElementById('edit-task-url').value,
+        output_file: document.getElementById('edit-task-output').value,
+        actions: getCurrentActions()
+    };
+    
+    try {
+        const response = await fetch(`/api/tasks/${filename}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(taskData)
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('保存成功', 'success');
+            closeModal();
+            loadTasks();
+        } else {
+            showToast('保存失败: ' + data.error, 'error');
+        }
+    } catch (error) {
+        showToast('保存失败: ' + error.message, 'error');
+    }
+}
+
+// ==================== 创建任务 ====================
+function showCreateTaskModal() {
+    const modal = document.getElementById('modal');
+    const content = document.getElementById('modal-content');
+    
+    const newTask = {
+        name: "新任务",
+        description: "任务描述",
+        url: "https://example.com",
+        actions: [],
+        output_file: "output/result.csv"
+    };
+    
+    content.innerHTML = `
+        <div class="modal-header">
+            <h3 class="modal-title">新建任务</h3>
+            <button class="btn-close" onclick="closeModal()">×</button>
+        </div>
+        
+        <div class="task-editor">
+            <div class="form-group">
+                <label class="form-label">文件名</label>
+                <input class="form-input" id="new-task-filename" placeholder="task_name.json" value="new_task.json">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">任务名称</label>
+                <input class="form-input" id="new-task-name" value="${newTask.name}" placeholder="任务名称">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">任务描述</label>
+                <textarea class="form-textarea" id="new-task-description" rows="2" placeholder="任务描述">${newTask.description}</textarea>
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">目标网址</label>
+                <input class="form-input" id="new-task-url" value="${newTask.url}" placeholder="https://example.com">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label">输出文件路径</label>
+                <input class="form-input" id="new-task-output" value="${newTask.output_file}" placeholder="output/result.csv">
+            </div>
+            
+            <div class="form-group">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                    <label class="form-label" style="margin: 0;">动作列表</label>
+                    <button class="btn btn-primary btn-sm" onclick="addAction()">
+                        <span>+</span> 添加动作
+                    </button>
+                </div>
+                <div id="actions-container" class="actions-editor">
+                    ${renderActionsEditor(newTask.actions)}
+                </div>
+            </div>
+        </div>
+        
+        <div class="modal-footer">
+            <button class="btn btn-secondary" onclick="closeModal()">取消</button>
+            <button class="btn btn-primary" onclick="createTask()">创建</button>
+        </div>
+    `;
+    
+    modal.classList.add('open');
+}
+
+async function createTask() {
+    const filename = document.getElementById('new-task-filename').value;
+    
+    if (!filename) {
+        showToast('请输入文件名', 'error');
+        return;
+    }
+    
+    const taskData = {
+        name: document.getElementById('new-task-name').value,
+        description: document.getElementById('new-task-description').value,
+        url: document.getElementById('new-task-url').value,
+        output_file: document.getElementById('new-task-output').value,
+        actions: getCurrentActions()
+    };
+    
+    try {
+        const response = await fetch('/api/tasks', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ...taskData, _file: filename })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('创建成功', 'success');
+            closeModal();
+            loadTasks();
+        } else {
+            showToast('创建失败: ' + data.error, 'error');
+        }
+    } catch (error) {
+        showToast('创建失败: ' + error.message, 'error');
+    }
+}
+
+// ==================== 删除任务 ====================
+async function deleteTask(filename) {
+    if (!confirm(`确定要删除任务 "${filename}" 吗？`)) {
+        return;
+    }
+    
+    try {
+        const response = await fetch(`/api/tasks/${filename}`, {
+            method: 'DELETE'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('删除成功', 'success');
+            loadTasks();
+            closeDetailPanel();
+        } else {
+            showToast('删除失败: ' + data.error, 'error');
+        }
+    } catch (error) {
+        showToast('网络错误: ' + error.message, 'error');
+    }
+}
+
+// ==================== 工具函数 ====================
+function formatDate(isoString) {
+    if (!isoString) return '未知';
+    try {
+        const date = new Date(isoString);
+        return date.toLocaleString('zh-CN', {
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+    } catch (e) {
+        return isoString;
+    }
+}
+
+// ==================== 公司资质 ====================
+let companies = [];
+let currentCompanyData = null;
+
+async function loadCompanies() {
+    const container = document.getElementById('companies-container');
+    container.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    
+    try {
+        const response = await fetch('/api/companies');
+        const data = await response.json();
+        
+        if (data.success) {
+            companies = data.companies;
+            renderCompanies();
+        }
+    } catch (error) {
+        showToast('加载失败', 'error');
+    }
+}
+
+function renderCompanies() {
+    const container = document.getElementById('companies-container');
+    
+    if (companies.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">🏢</div>
+                <div class="empty-title">暂无公司资质数据</div>
+                <div class="empty-text">运行任务后，公司资质信息将显示在这里</div>
+            </div>
+        `;
+        return;
+    }
+    
+    // 转义公司名称，避免XSS和特殊字符问题
+    const escapeHtml = (text) => {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    };
+    
+    // 创建tab页结构
+    container.innerHTML = `
+        <div class="companies-tabs">
+            <div class="tab-buttons">
+                ${companies.map((company, index) => `
+                    <button class="tab-button ${index === 0 ? 'active' : ''}" 
+                            onclick="switchCompanyTab('${escapeHtml(company.name)}', ${index})"
+                            data-company-name="${escapeHtml(company.name)}">
+                        ${escapeHtml(company.name)}
+                        <span class="tab-badge">${company.certificate_count || 0}</span>
+                    </button>
+                `).join('')}
+            </div>
+            <div class="tab-content">
+                ${companies.map((company, index) => `
+                    <div class="tab-panel ${index === 0 ? 'active' : ''}" id="tab-${escapeHtml(company.name)}">
+                        <div class="loading"><div class="spinner"></div></div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `;
+    
+    // 加载第一个公司的数据
+    if (companies.length > 0) {
+        loadCompanyData(companies[0].name, 0);
+    }
+}
+
+function switchCompanyTab(companyName, index) {
+    // 更新tab按钮状态
+    document.querySelectorAll('.tab-button').forEach((btn, idx) => {
+        btn.classList.toggle('active', idx === index);
+    });
+    
+    // 更新tab面板状态
+    document.querySelectorAll('.tab-panel').forEach((panel, idx) => {
+        panel.classList.toggle('active', idx === index);
+    });
+    
+    // 加载公司数据（使用data属性获取公司名称，更安全）
+    const button = document.querySelectorAll('.tab-button')[index];
+    const actualCompanyName = button ? button.getAttribute('data-company-name') || companyName : companyName;
+    loadCompanyData(actualCompanyName, index);
+}
+
+async function loadCompanyData(companyName, index) {
+    const panel = document.getElementById(`tab-${companyName}`);
+    if (!panel) {
+        console.error(`找不到面板: tab-${companyName}`);
+        return;
+    }
+    
+    panel.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    
+    try {
+        const encodedName = encodeURIComponent(companyName);
+        const url = `/api/companies/${encodedName}`;
+        console.log(`加载公司数据: ${url}`);
+        
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            currentCompanyData = data;
+            renderCompanyCertificates(data, panel);
+        } else {
+            throw new Error(data.error || '加载失败');
+        }
+    } catch (error) {
+        console.error('加载公司数据失败:', error);
+        panel.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-title">加载失败</div>
+                <div class="empty-text">${error.message}</div>
+            </div>
+        `;
+        showToast(`加载公司数据失败: ${error.message}`, 'error');
+    }
+}
+
+function renderCompanyCertificates(companyData, container) {
+    const certificates = companyData.certificates || [];
+    const lastUpdated = companyData.last_updated;
+    
+    if (certificates.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">📋</div>
+                <div class="empty-title">暂无资质信息</div>
+                <div class="empty-text">该公司的资质信息将在查询后显示</div>
+            </div>
+        `;
+        return;
+    }
+    
+    container.innerHTML = `
+        <div class="company-header">
+            <div class="company-info">
+                <h2>${companyData.company_name}</h2>
+                <div class="company-meta">
+                    <span>最后更新: ${lastUpdated ? formatDate(lastUpdated) : '未知'}</span>
+                    <span>资质类型: ${certificates.length} 种</span>
+                </div>
+            </div>
+        </div>
+        
+        <div class="certificates-list">
+            ${certificates.map((cert, index) => renderCertificateCard(cert, index, companyData.company_name)).join('')}
+        </div>
+    `;
+}
+
+function renderCertificateCard(certInfo, index, companyName) {
+    const taskName = certInfo.task_name;
+    const certificates = certInfo.certificates || [];
+    const lastQueryTime = certInfo.last_query_time;
+    // 使用公司名称和索引生成唯一ID，避免不同tab之间的ID冲突
+    const safeCompanyName = (companyName || '').replace(/[^a-zA-Z0-9]/g, '_');
+    const safeTaskName = (taskName || '').replace(/[^a-zA-Z0-9]/g, '_');
+    const cardId = `cert-card-${safeCompanyName}-${safeTaskName}-${index}`;
+    const detailsId = `cert-details-${safeCompanyName}-${safeTaskName}-${index}`;
+    
+    return `
+        <div class="certificate-card">
+            <div class="certificate-header clickable" onclick="toggleCertificateCard('${detailsId}')">
+                <div class="certificate-header-left">
+                    <span class="certificate-toggle-icon" id="icon-${detailsId}">▼</span>
+                    <h3>${taskName}</h3>
+                </div>
+                <span class="certificate-count">${certInfo.total_count || 0} 个证书</span>
+            </div>
+            
+            <div class="certificate-meta">
+                <span>最后查询: ${lastQueryTime ? formatDate(lastQueryTime) : '未知'}</span>
+            </div>
+            
+            <div class="certificate-details-container" id="${detailsId}" style="display: none;">
+                ${certificates.length > 0 ? `
+                    <div class="certificate-details">
+                        ${certificates.map(cert => `
+                            <div class="cert-detail-item ${cert.is_valid === false ? 'expired' : ''}">
+                                <div class="cert-detail-row">
+                                    <span class="cert-label">资质名称:</span>
+                                    <span class="cert-value">${cert['资质名称'] || cert['证书名称'] || 'N/A'}</span>
+                                </div>
+                                ${cert['资质等级'] ? `
+                                    <div class="cert-detail-row">
+                                        <span class="cert-label">资质等级:</span>
+                                        <span class="cert-value cert-level">${cert['资质等级']}</span>
+                                    </div>
+                                ` : ''}
+                                ${cert['有效期至'] ? `
+                                    <div class="cert-detail-row">
+                                        <span class="cert-label">有效期至:</span>
+                                        <span class="cert-value ${cert.is_valid === false ? 'expired-text' : ''}">${cert['有效期至']}</span>
+                                        ${cert.is_valid === false ? '<span class="expired-badge">已过期</span>' : '<span class="valid-badge">有效</span>'}
+                                    </div>
+                                ` : ''}
+                                ${cert['证书编号'] ? `
+                                    <div class="cert-detail-row">
+                                        <span class="cert-label">证书编号:</span>
+                                        <span class="cert-value">${cert['证书编号']}</span>
+                                    </div>
+                                ` : ''}
+                                ${cert['发证机构'] ? `
+                                    <div class="cert-detail-row">
+                                        <span class="cert-label">发证机构:</span>
+                                        <span class="cert-value">${cert['发证机构']}</span>
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : `
+                    <div class="no-certificates">
+                        <p>${certInfo.summary || '未找到有效证书'}</p>
+                    </div>
+                `}
+            </div>
+        </div>
+    `;
+}
+
+// ==================== 资质对比 ====================
+async function loadCompareView() {
+    // 加载有资质数据的公司列表到选择器
+    try {
+        const response = await fetch('/api/companies');
+        const data = await response.json();
+        
+        if (data.success) {
+            const targetSelect = document.getElementById('compare-target-company');
+            const refSelect = document.getElementById('compare-ref-company');
+            
+            // 清空并重新填充
+            targetSelect.innerHTML = '<option value="">请选择公司</option>';
+            refSelect.innerHTML = '';
+            
+            data.companies.forEach(company => {
+                targetSelect.innerHTML += `<option value="${company.name}">${company.name}</option>`;
+                refSelect.innerHTML += `<option value="${company.name}" ${company.name === '中移系统集成有限公司' ? 'selected' : ''}>${company.name}</option>`;
+            });
+        }
+    } catch (error) {
+        showToast('加载公司列表失败', 'error');
+    }
+}
+
+async function runComparison() {
+    const targetCompany = document.getElementById('compare-target-company').value;
+    const refCompany = document.getElementById('compare-ref-company').value;
+    
+    if (!targetCompany) {
+        showToast('请选择己方公司', 'error');
+        return;
+    }
+    
+    if (targetCompany === refCompany) {
+        showToast('不能与自己对比', 'error');
+        return;
+    }
+    
+    const resultContainer = document.getElementById('compare-result');
+    resultContainer.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    
+    try {
+        const response = await fetch('/api/compare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                target_company: targetCompany,
+                reference_company: refCompany
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            renderComparisonResult(data);
+        } else {
+            showToast(data.error || '对比失败', 'error');
+            resultContainer.innerHTML = `<div class="empty-state"><div class="empty-title">对比失败</div><div class="empty-text">${data.error}</div></div>`;
+        }
+    } catch (error) {
+        showToast('网络错误: ' + error.message, 'error');
+        resultContainer.innerHTML = '<div class="empty-state"><div class="empty-title">网络错误</div></div>';
+    }
+}
+
+function renderComparisonResult(data) {
+    const container = document.getElementById('compare-result');
+    const { target_company, reference_company, comparison, summary } = data;
+    
+    container.innerHTML = `
+        <div class="compare-summary">
+            <h3>📊 对比摘要</h3>
+            <div class="summary-grid">
+                <div class="summary-item">
+                    <span class="summary-value">${summary.total}</span>
+                    <span class="summary-label">资质总数</span>
+                </div>
+                <div class="summary-item target">
+                    <span class="summary-value">${summary.target_has}</span>
+                    <span class="summary-label">己方持有</span>
+                </div>
+                <div class="summary-item ref">
+                    <span class="summary-value">${summary.ref_has}</span>
+                    <span class="summary-label">对方持有</span>
+                </div>
+                <div class="summary-item">
+                    <span class="summary-value">${summary.both_have}</span>
+                    <span class="summary-label">双方共有</span>
+                </div>
+                <div class="summary-item success">
+                    <span class="summary-value">${summary.target_only}</span>
+                    <span class="summary-label">己方独有</span>
+                </div>
+                <div class="summary-item danger">
+                    <span class="summary-value">${summary.ref_only}</span>
+                    <span class="summary-label">己方缺失</span>
+                </div>
+            </div>
+            <div class="compare-actions">
+                <button class="btn btn-success" onclick="exportComparison('${target_company}', '${reference_company}')">
+                    📥 导出Excel报告
+                </button>
+            </div>
+        </div>
+        
+        <div class="compare-table-container">
+            <table class="compare-table">
+                <thead>
+                    <tr>
+                        <th>资质名称</th>
+                        <th>己方证书编号</th>
+                        <th>己方是否具有</th>
+                        <th>对方证书编号</th>
+                        <th>对方是否具有</th>
+                        <th>对比概述</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${comparison.map(item => `
+                        <tr class="${getRowClass(item)}">
+                            <td class="qual-name">${item.qualification_name}</td>
+                            <td>${item.target_cert_no}</td>
+                            <td class="${item.target_has ? 'has-yes' : 'has-no'}">${item.target_has ? '是' : '否'}</td>
+                            <td>${item.ref_cert_no}</td>
+                            <td class="${item.ref_has ? 'has-yes' : 'has-no'}">${item.ref_has ? '是' : '否'}</td>
+                            <td class="overview">${item.overview}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        </div>
+    `;
+}
+
+function getRowClass(item) {
+    if (item.overview.includes('己方独有') || item.overview.includes('己方领先')) {
+        return 'row-success';
+    } else if (item.overview.includes('己方缺失') || item.overview.includes('对方领先')) {
+        return 'row-danger';
+    } else if (item.overview.includes('双方均无')) {
+        return 'row-warning';
+    }
+    return '';
+}
+
+async function exportComparison(targetCompany, refCompany) {
+    showToast('正在生成报告...', 'info');
+    
+    try {
+        const response = await fetch('/api/compare/export', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                target_company: targetCompany,
+                reference_company: refCompany
+            })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('报告生成成功，正在下载...', 'success');
+            // 触发下载
+            const link = document.createElement('a');
+            link.href = data.download_url;
+            link.download = data.report_name;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        } else {
+            showToast(data.error || '导出失败', 'error');
+        }
+    } catch (error) {
+        showToast('网络错误: ' + error.message, 'error');
+    }
+}
+
+// ==================== 配置 ====================
+async function loadConfig() {
+    const container = document.getElementById('config-container');
+    container.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    
+    try {
+        const [configResp, companiesResp] = await Promise.all([
+            fetch('/api/config'),
+            fetch('/api/company-names')
+        ]);
+        
+        const configData = await configResp.json();
+        const companiesData = await companiesResp.json();
+        
+        let html = '';
+        
+        // 公司名称管理
+        const companyNames = companiesData.success ? companiesData.companies : [];
+        html += `
+            <div class="config-section">
+                <h3>🏢 公司名称管理</h3>
+                <div class="company-names-list" id="company-names-list">
+                    ${companyNames.map(name => `
+                        <div class="company-name-item">
+                            <span>${name}</span>
+                            <button class="btn btn-danger btn-sm" onclick="deleteCompanyName('${name}')">删除</button>
+                        </div>
+                    `).join('')}
+                </div>
+                <div class="add-company-form">
+                    <input type="text" class="form-input" id="new-company-name" placeholder="输入新公司名称">
+                    <button class="btn btn-primary" onclick="addCompanyName()">添加公司</button>
+                </div>
+            </div>
+        `;
+        
+        if (configData.success) {
+            html += `
+                <div class="config-section">
+                    <h3>🌐 浏览器配置</h3>
+                    ${Object.entries(configData.browser).map(([key, value]) => `
+                        <div class="config-item">
+                            <span class="config-key">${key}</span>
+                            <span class="config-value">${JSON.stringify(value)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+                
+                <div class="config-section">
+                    <h3>🤖 大模型配置</h3>
+                    ${Object.entries(configData.llm).map(([key, value]) => `
+                        <div class="config-item">
+                            <span class="config-key">${key}</span>
+                            <span class="config-value">${JSON.stringify(value)}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+        }
+        
+        container.innerHTML = html;
+    } catch (error) {
+        container.innerHTML = '<div class="empty-state"><div class="empty-title">加载配置失败</div></div>';
+    }
+}
+
+async function addCompanyName() {
+    const input = document.getElementById('new-company-name');
+    const name = input.value.trim();
+    
+    if (!name) {
+        showToast('请输入公司名称', 'error');
+        return;
+    }
+    
+    try {
+        const response = await fetch('/api/company-names', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('添加成功', 'success');
+            input.value = '';
+            loadConfig();
+        } else {
+            showToast(data.error || '添加失败', 'error');
+        }
+    } catch (error) {
+        showToast('网络错误', 'error');
+    }
+}
+
+async function deleteCompanyName(name) {
+    if (!confirm(`确定删除公司 "${name}" 吗？`)) return;
+    
+    try {
+        const response = await fetch(`/api/company-names/${encodeURIComponent(name)}`, {
+            method: 'DELETE'
+        });
+        
+        const data = await response.json();
+        
+        if (data.success) {
+            showToast('删除成功', 'success');
+            loadConfig();
+        } else {
+            showToast(data.error || '删除失败', 'error');
+        }
+    } catch (error) {
+        showToast('网络错误', 'error');
+    }
+}
+
+// ==================== 模态框 ====================
+function closeModal() {
+    document.getElementById('modal').classList.remove('open');
+}
+
+// ==================== Toast 通知 ====================
+function showToast(message, type = 'info') {
+    const container = document.getElementById('toast-container');
+    const toast = document.createElement('div');
+    toast.className = `toast ${type}`;
+    toast.innerHTML = `
+        <span>${type === 'success' ? '✓' : type === 'error' ? '✗' : 'ℹ'}</span>
+        <span>${message}</span>
+    `;
+    
+    container.appendChild(toast);
+    
+    setTimeout(() => {
+        toast.style.opacity = '0';
+        toast.style.transform = 'translateX(100%)';
+        setTimeout(() => toast.remove(), 300);
+    }, 3000);
+}
+
+// ==================== 快捷键 ====================
+document.addEventListener('keydown', (e) => {
+    // ESC 关闭模态框和面板
+    if (e.key === 'Escape') {
+        closeModal();
+        closeDetailPanel();
+    }
+});
+

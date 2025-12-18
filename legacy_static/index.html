@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>自动化任务管理</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app">
+        <!-- 侧边栏 -->
+        <aside class="sidebar">
+            <div class="logo">
+                <img src="/static/法务.jpeg" alt="logo" class="logo-img">
+                <span class="logo-text">资质对标</span>
+            </div>
+            
+            <nav class="nav">
+                <a href="#" class="nav-item active" data-view="dashboard">
+                    <span class="nav-icon">📊</span>
+                    <span>智慧大屏</span>
+                </a>
+                <a href="#" class="nav-item" data-view="tasks">
+                    <span class="nav-icon">📋</span>
+                    <span>任务列表</span>
+                </a>
+                <a href="#" class="nav-item" data-view="batches">
+                    <span class="nav-icon">🔁</span>
+                    <span>批量</span>
+                </a>
+                <a href="#" class="nav-item" data-view="companies">
+                    <span class="nav-icon">🏢</span>
+                    <span>公司资质</span>
+                </a>
+                <a href="#" class="nav-item" data-view="compare">
+                    <span class="nav-icon">⚖️</span>
+                    <span>资质对比</span>
+                </a>
+                <a href="#" class="nav-item" data-view="manual">
+                    <span class="nav-icon">📝</span>
+                    <span>手动录入</span>
+                </a>
+                <a href="#" class="nav-item" data-view="config">
+                    <span class="nav-icon">⚙️</span>
+                    <span>系统配置</span>
+                </a>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <span class="status-dot"></span>
+                    <span>系统就绪</span>
+                </div>
+            </div>
+        </aside>
+        
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <!-- 智慧大屏视图 -->
+            <div id="dashboard-view" class="view active">
+                <header class="view-header">
+                    <h1>智慧资质对标大屏</h1>
+                    <div class="dashboard-time" id="dashboard-time"></div>
+                </header>
+                
+                <div class="dashboard-grid">
+                    <!-- 核心指标 -->
+                    <div class="dashboard-card stats-overview">
+                        <div class="card-header">核心资质概览</div>
+                        <div class="stats-container" id="stats-summary">
+                            <div class="stat-item main">
+                                <div class="stat-label">中移系统集成总资质</div>
+                                <div class="stat-value" id="main-company-total">-</div>
+                            </div>
+                            <div class="stat-divider"></div>
+                            <div class="stat-group">
+                                <div class="stat-item">
+                                    <div class="stat-label">对标公司总数</div>
+                                    <div class="stat-value" id="competitor-count">-</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-label">今日更新</div>
+                                    <div class="stat-value" id="today-updates">0</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 资质水平分布 -->
+                    <div class="dashboard-card level-distribution">
+                        <div class="card-header">资质等级分布</div>
+                        <div class="chart-container" id="level-chart">
+                            <!-- 简易图表实现 -->
+                        </div>
+                    </div>
+
+                    <!-- 竞争对标矩阵 -->
+                    <div class="dashboard-card comparison-matrix">
+                        <div class="card-header">竞争对手对标分析</div>
+                        <div class="matrix-container" id="comparison-matrix">
+                            <table class="dashboard-table">
+                                <thead>
+                                    <tr>
+                                        <th>公司名称</th>
+                                        <th>资质总数</th>
+                                        <th>领先资质</th>
+                                        <th>落后资质</th>
+                                        <th>对比概况</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="matrix-body">
+                                    <!-- 动态插入 -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 最新动态 -->
+                    <div class="dashboard-card recent-activities">
+                        <div class="card-header">实时更新动态</div>
+                        <div class="activity-list" id="recent-activities">
+                            <!-- 动态插入 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 任务列表视图 -->
+            <div id="tasks-view" class="view">
+                <header class="view-header">
+                    <div style="display: flex; align-items: center; gap: 16px; flex: 1;">
+                        <h1 style="margin: 0;">任务列表</h1>
+                        <span id="task-count" style="color: var(--text-muted); font-size: 14px;"></span>
+                        <div class="company-selector">
+                            <label class="form-label" style="margin: 0; margin-right: 8px;">查询公司：</label>
+                            <select class="form-select" id="company-select" style="width: 200px;" onchange="updateCompanyName(this.value)">
+                                <option value="中移系统集成有限公司" selected>中移系统集成有限公司</option>
+                                <option value="联通数字科技有限公司">联通数字科技有限公司</option>
+                                <option value="中电信数智科技有限公司">中电信数智科技有限公司</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <label class="toggle-switch" title="显示已禁用的任务">
+                            <input type="checkbox" id="show-disabled-toggle" onchange="toggleDisabledTasks(this.checked)">
+                            <span class="toggle-slider"></span>
+                            <span style="margin-left: 8px; font-size: 13px;">显示禁用</span>
+                        </label>
+                        <button class="btn btn-primary" onclick="showCreateTaskModal()">
+                            <span>+</span> 新建任务
+                        </button>
+                    </div>
+                </header>
+                
+                <div class="tasks-grid" id="tasks-container">
+                    <!-- 任务卡片将动态插入 -->
+                </div>
+            </div>
+            
+            <!-- 公司资质视图 -->
+            <div id="companies-view" class="view">
+                <header class="view-header">
+                    <h1>公司资质信息</h1>
+                    <div style="display: flex; gap: 12px;">
+                        <button class="btn btn-primary" onclick="showAddCompanyModal()">
+                            <span>+</span> 新增公司
+                        </button>
+                        <button class="btn btn-secondary" onclick="loadCompanies()">
+                            <span>🔄</span> 刷新
+                        </button>
+                    </div>
+                </header>
+                
+                <div class="companies-container" id="companies-container">
+                    <!-- 公司列表和资质信息将动态插入 -->
+                </div>
+            </div>
+            
+            <!-- 配置视图 -->
+            <div id="config-view" class="view">
+                <header class="view-header">
+                    <h1>系统配置</h1>
+                </header>
+                
+                <div class="config-content" id="config-container">
+                    <!-- 配置信息将动态插入 -->
+                </div>
+            </div>
+            
+            <!-- 公司管理部分会在config加载时动态添加 -->
+
+            <!-- 资质对比视图 -->
+            <div id="compare-view" class="view">
+                <header class="view-header">
+                    <h1>资质对比</h1>
+                </header>
+                
+                <div class="compare-container">
+                    <div class="compare-selector">
+                        <div class="compare-company-box">
+                            <label class="form-label">己方公司</label>
+                            <select class="form-select" id="compare-target-company">
+                                <option value="">请选择公司</option>
+                            </select>
+                        </div>
+                        <div class="compare-vs">VS</div>
+                        <div class="compare-company-box">
+                            <label class="form-label">对方公司</label>
+                            <select class="form-select" id="compare-ref-company">
+                                <option value="">请选择公司</option>
+                            </select>
+                        </div>
+                        <button class="btn btn-primary" onclick="runComparison()">
+                            <span>🔍</span> 开始对比
+                        </button>
+                    </div>
+                    
+                    <div id="compare-result" class="compare-result">
+                        <div class="empty-state">
+                            <div class="empty-icon">⚖️</div>
+                            <div class="empty-title">选择公司开始对比</div>
+                            <div class="empty-text">选择己方公司，与参照公司进行资质对比分析</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 批量视图 -->
+            <div id="batches-view" class="view">
+                <header class="view-header">
+                    <h1>批量任务</h1>
+                    <div style="display:flex; gap:12px; align-items:center;">
+                        <button class="btn btn-primary" onclick="showCreateBatchModal()">+ 新建批次</button>
+                        <button class="btn btn-secondary" onclick="loadBatches()">🔄 刷新</button>
+                    </div>
+                </header>
+
+                <div class="batches-container" id="batches-container">
+                    <!-- 批次列表将动态插入 -->
+                </div>
+            </div>
+
+            <!-- 手动录入视图 -->
+            <div id="manual-view" class="view">
+                <header class="view-header">
+                    <h1>手动录入资质</h1>
+                </header>
+                
+                <div class="manual-container">
+                    <div class="dashboard-card manual-card">
+                        <div class="card-header">
+                            <span>录入资质信息</span>
+                        </div>
+
+                        <form id="manual-entry-form" onsubmit="submitManualEntry(event)">
+                            <div class="form-grid">
+                                <div class="form-group autocomplete">
+                                    <label class="form-label">资质名称</label>
+                                    <input type="text" class="form-input" id="manual-category" placeholder="例如：ITSS信息技术服务标准" required autocomplete="off">
+                                    <div id="category-list" class="autocomplete-items"></div>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">公司名称</label>
+                                    <select class="form-input" id="manual-company" required>
+                                        <option value="">请选择公司</option>
+                                        <!-- 动态加载 -->
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">证书编号</label>
+                                    <input type="text" class="form-input" id="manual-cert-no" placeholder="证书上的编号" required>
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">证书等级</label>
+                                    <input type="text" class="form-input" id="manual-level" placeholder="例如：一级 / 甲级 / A">
+                                </div>
+                                <div class="form-group">
+                                    <label class="form-label">有效期至</label>
+                                    <input type="date" class="form-input" id="manual-expiry">
+                                </div>
+                            </div>
+                            <div class="form-footer" style="margin-top: 24px; display: flex; justify-content: flex-end;">
+                                <button type="submit" class="btn btn-primary btn-lg">
+                                    <span>💾</span> 确认录入数据
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </main>
+        
+    </div>
+    
+    <!-- 模态框 -->
+    <div class="modal" id="modal">
+        <div class="modal-overlay" onclick="closeModal()"></div>
+        <div class="modal-content" id="modal-content">
+            <!-- 模态框内容将动态插入 -->
+        </div>
+    </div>
+    
+    <!-- Toast 通知 -->
+    <div class="toast-container" id="toast-container"></div>
+    <script src="/static/app.js"></script>
+</body>
+</html>
+
